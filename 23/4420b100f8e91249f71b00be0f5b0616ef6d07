@@ -1,0 +1,31 @@
+cmd/mount/file.go
+  s_2b44ee96cc775e::t_cbd15674d9ab9b 138-139
+vfs/file.go
+  s_2b44ee96cc775e::t_80b9e0518f96e0 62,546,549-552,679-688,695,713-715,721-727,871-875
+vfs/file_test.go
+  s_2b44ee96cc775e::t_f4e535fa786072 9,439-568
+vfs/read_write.go
+  s_2b44ee96cc775e::t_f816143923f498 101-105,270-272,276-278
+vfs/vfscache/cache.go
+  s_2b44ee96cc775e::t_6b60b7fcee097f 495-504
+vfs/vfscache/item.go
+  s_2b44ee96cc775e::t_9e288871b9288a 74,215-217,649-652,784,839,1007-1029,1366-1368
+vfs/vfscache/item_test.go
+  s_2b44ee96cc775e::t_d4190643483ad1 858-924
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "234420b100f8e91249f71b00be0f5b0616ef6d07",
+  "prompts": {},
+  "sessions": {
+    "s_2b44ee96cc775e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a90fd5ba-5c6e-4e2a-97b0-44f409fd7cba",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Nick Sweeting <git@sweeting.me>"
+    }
+  }
+}
