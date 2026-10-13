@@ -492,6 +492,7 @@ func (c *Cache) Remove(name string) (wasWriting bool) {
 	if item == nil {
 		return false
 	}
+	// ArchiveBox patch until https://github.com/rclone/rclone/pull/10080 is released.
 	// Remove the cache files before taking the item out of the map,
 	// otherwise a lookup in between makes a new item from the metadata
 	// being deleted.

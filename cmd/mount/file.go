@@ -135,6 +135,8 @@ var _ fusefs.NodeReadlinker = (*File)(nil)
 // Readlink read symbolic link target.
 func (f *File) Readlink(ctx context.Context, req *fuse.ReadlinkRequest) (ret string, err error) {
 	defer log.Trace(f, "")("ret=%v, err=%v", &ret, &err)
+	// ArchiveBox patch until https://github.com/rclone/rclone/pull/10080 is released: untranslated
+	// VFS errors reached callers as EIO.
 	ret, err = f.VFS().Readlink(f.Path())
 	return ret, translateError(err)
 }

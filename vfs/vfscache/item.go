@@ -1007,6 +1007,9 @@ func (item *Item) _remove(reason string) (wasWriting bool) {
 // removeDeleted removes the cache files of an item whose file has been
 // deleted from the VFS.
 //
+// ArchiveBox patch until https://github.com/rclone/rclone/pull/10080 is released: a deleted
+// item's late close used to clobber the next file's metadata and upload.
+//
 // Handles opened before the delete may still be using the item. A file
 // created with the same name gets a new item with the same cache paths, so
 // this one is marked deleted and no longer writes to them. Its info is kept

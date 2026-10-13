@@ -676,6 +676,10 @@ func (f *File) Remove() (err error) {
 		return EROFS
 	}
 
+	// ArchiveBox carries this patch on v1.75.2 until https://github.com/rclone/rclone/pull/10080
+	// is released: without it, symlinks re-created in place while being read
+	// got stuck as EIO entries on the archive mount (rclone issue #10079).
+	//
 	// The File stays reachable after it is removed, eg by a FUSE open of
 	// an inode looked up before the unlink. Opening it would add it back to
 	// the directory pointing at the deleted object, so hold muRW for the

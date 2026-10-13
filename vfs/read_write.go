@@ -98,7 +98,8 @@ func (fh *RWFileHandle) openPending() (err error) {
 	fh.file.muRW.Lock()
 	defer fh.file.muRW.Unlock()
 
-	// The file may have been removed since the handle was made
+	// The file may have been removed since the handle was made.
+	// ArchiveBox patch until https://github.com/rclone/rclone/pull/10080 is released.
 	if fh.file.isRemoved() {
 		return ENOENT
 	}
