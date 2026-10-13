@@ -1,0 +1,27 @@
+cmd/mount/file.go
+  s_2b44ee96cc775e::t_2407c6c02a2839 138-139
+vfs/file.go
+  s_2b44ee96cc775e::t_58dfc7115b6802 679-682
+vfs/read_write.go
+  s_2b44ee96cc775e::t_5ebc866ecaf5e0 101-102
+vfs/vfscache/cache.go
+  s_2b44ee96cc775e::t_3e94616865c573 495
+vfs/vfscache/item.go
+  s_2b44ee96cc775e::t_db8c4f25b77290 1010-1012
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f36b4f78eaa675391b7b60a5afc940c14b69f2d9",
+  "prompts": {},
+  "sessions": {
+    "s_2b44ee96cc775e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a90fd5ba-5c6e-4e2a-97b0-44f409fd7cba",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Nick Sweeting <git@sweeting.me>"
+    }
+  }
+}
