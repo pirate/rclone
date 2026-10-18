@@ -1,0 +1,31 @@
+cmd/serve/http/http_test.go
+  s_72f587e2a5f524::t_37c28840386a06 18,23-24,603-632
+fs/chunkedreader/sequential.go
+  s_10bc94d001be49::t_d0bb488b887879 20,36,95-97,222-225
+fs/chunkedreader/sequential_real_test.go
+  s_72f587e2a5f524::t_32cc0522ee5a77 7-9,14,18-19,33-42,46,51-53,55,57,59,61,63-65,67-69,71-73,75,81-83,85-111,113-131
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0db2e451b50a35c2cad8db72927548ee4e993da9",
+  "prompts": {},
+  "sessions": {
+    "s_10bc94d001be49": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a11f62-2c55-7051-a677-585a21b42fb4",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Nick Sweeting <git@sweeting.me>"
+    },
+    "s_72f587e2a5f524": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a15077-039d-7e83-83ea-3c4cefb8cf3d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Nick Sweeting <git@sweeting.me>"
+    }
+  }
+}
