@@ -1,0 +1,21 @@
+fs/chunkedreader/sequential.go
+  s_72f587e2a5f524::t_f6fe62db7231eb 96-98,221
+fs/chunkedreader/sequential_real_test.go
+  s_72f587e2a5f524::t_fffc861dc1d725 19,52,94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "81d57d9298bd3de2e98dc45eb558ee4ae6453490",
+  "prompts": {},
+  "sessions": {
+    "s_72f587e2a5f524": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a15077-039d-7e83-83ea-3c4cefb8cf3d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Nick Sweeting <git@sweeting.me>"
+    }
+  }
+}
