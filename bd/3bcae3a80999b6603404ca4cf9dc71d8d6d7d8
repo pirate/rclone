@@ -1,0 +1,22 @@
+vfs/vfscache/cache_test.go
+  s_10bc94d001be49::t_0194d2e412d830 42,54
+  s_10bc94d001be49::t_09f7dfb3f99715 28-41,43-53,55-56
+vfs/vfscache/cache.go
+  s_10bc94d001be49::t_0194d2e412d830 518-521,536,547-548
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bd3bcae3a80999b6603404ca4cf9dc71d8d6d7d8",
+  "prompts": {},
+  "sessions": {
+    "s_10bc94d001be49": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a11f62-2c55-7051-a677-585a21b42fb4",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Nick Sweeting <git@sweeting.me>"
+    }
+  }
+}
