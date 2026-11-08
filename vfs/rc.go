@@ -93,7 +93,7 @@ func rcRefresh(ctx context.Context, in rc.Params) (out rc.Params, err error) {
 		var node Node = root
 		for _, s := range segments {
 			if dir, ok := node.(*Dir); ok {
-				node, err = dir.stat(s)
+				node, err = dir.stat(dir.vfs.ctx, s)
 				if err != nil {
 					return nil, err
 				}

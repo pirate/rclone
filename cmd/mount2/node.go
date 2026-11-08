@@ -189,17 +189,23 @@ var _ = (fusefs.NodeOpener)((*Node)(nil))
 // children in directories. Hence, they also return *Inode and must
 // populate their fuse.EntryOut arguments.
 func (n *Node) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (inode *fusefs.Inode, errno syscall.Errno) {
-	defer log.Trace(n, "name=%q", name)("inode=%v, attr=%v, errno=%v", &inode, &out, &errno)
-	vfsNode, errno := n.lookupVfsNodeInDir(name)
-	if errno != 0 {
-		return nil, errno
+	defer log.Trace(nil, "inode=%d, name=%q", n.node.Inode(), name)("attr=%v, errno=%v", &out, &errno)
+	dir, ok := n.node.(*vfs.Dir)
+	if !ok {
+		return nil, syscall.ENOTDIR
+	}
+	vfsNode, err := dir.StatContext(ctx, name)
+	if err != nil {
+		return nil, translateError(err)
 	}
 	newNode := newNode(n.fsys, vfsNode)
 
 	// FIXME
 	// out.SetEntryTimeout(dt time.Duration)
 	// out.SetAttrTimeout(dt time.Duration)
-	n.fsys.setEntryOut(vfsNode, out)
+	if err := n.fsys.setEntryOutContext(ctx, vfsNode, out); err != nil {
+		return nil, translateError(err)
+	}
 
 	return n.NewInode(ctx, newNode, fusefs.StableAttr{Mode: out.Attr.Mode, Ino: newNode.node.Inode()}), 0
 }

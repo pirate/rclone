@@ -246,7 +246,7 @@ func New(ctx context.Context, f fs.Fs, opt *vfscommon.Options) *VFS {
 	active[configName] = append(active[configName], vfs)
 
 	// Create root directory
-	vfs.root = newDir(vfs, f, nil, fsDir)
+	vfs.root = newDir(vfs.ctx, vfs, f, nil, fsDir)
 
 	// Start polling function
 	features := vfs.f.Features()

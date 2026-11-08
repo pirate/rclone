@@ -78,6 +78,8 @@ func translateError(err error) error {
 	}
 	_, uErr := fserrors.Cause(err)
 	switch uErr {
+	case context.Canceled, context.DeadlineExceeded:
+		return fuse.Errno(syscall.EINTR)
 	case vfs.OK:
 		return nil
 	case vfs.ENOENT, fs.ErrorDirNotFound, fs.ErrorObjectNotFound:

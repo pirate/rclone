@@ -368,6 +368,27 @@ func (f *File) _roundModTime(modTime time.Time) time.Time {
 //
 // if NoModTime is set then it returns the mod time of the directory
 func (f *File) ModTime() (modTime time.Time) {
+	return f.modTime(f.ctx)
+}
+
+// ModTimeContext returns the modification time using request cancellation and
+// the VFS config. It returns the context error if the request is canceled.
+func (f *File) ModTimeContext(request context.Context) (time.Time, error) {
+	if err := request.Err(); err != nil {
+		return time.Time{}, err
+	}
+	ctx, cancel := context.WithCancel(f.ctx)
+	stop := context.AfterFunc(request, cancel)
+	defer stop()
+	defer cancel()
+	modTime := f.modTime(ctx)
+	if err := ctx.Err(); err != nil {
+		return time.Time{}, err
+	}
+	return modTime, nil
+}
+
+func (f *File) modTime(ctx context.Context) (modTime time.Time) {
 	f.mu.RLock()
 	d, o, pendingModTime, virtualModTime := f.d, f.o, f.pendingModTime, f.virtualModTime
 	f.mu.RUnlock()
@@ -377,6 +398,9 @@ func (f *File) ModTime() (modTime time.Time) {
 	// Note that we only cache modtime values that we have returned to the OS
 	// if we haven't returned a value to the OS then we can change it
 	defer func() {
+		if ctx.Err() != nil {
+			return
+		}
 		if f.d.f.Precision() == fs.ModTimeNotSupported && (virtualModTime == nil || !virtualModTime.Equal(modTime)) {
 			f.virtualModTime = &modTime
 			fs.Debugf(f._path(), "Set virtual modtime to %v", f.virtualModTime)
@@ -407,7 +431,7 @@ func (f *File) ModTime() (modTime time.Time) {
 	if o == nil {
 		return time.Now()
 	}
-	return o.ModTime(f.ctx)
+	return o.ModTime(ctx)
 }
 
 // nonNegative returns 0 if i is -ve, i otherwise

@@ -5,6 +5,7 @@
 package mount2
 
 import (
+	"context"
 	"os"
 	"syscall"
 	"time"
@@ -67,10 +68,14 @@ func getMode(node os.FileInfo) uint32 {
 
 // fill in attr from node
 func setAttr(node vfs.Node, attr *fuse.Attr) {
-	Size := uint64(node.Size())
+	size := node.Size()
+	setAttrWithModTime(node, attr, size, node.ModTime())
+}
+
+func setAttrWithModTime(node vfs.Node, attr *fuse.Attr, size int64, modTime time.Time) {
+	Size := uint64(size)
 	const BlockSize = 512
 	Blocks := (Size + BlockSize - 1) / BlockSize
-	modTime := node.ModTime()
 	// set attributes
 	vfs := node.VFS()
 	attr.Owner.Gid = vfs.Opt.GID
@@ -105,6 +110,24 @@ func (f *FS) setEntryOut(node vfs.Node, out *fuse.EntryOut) {
 	out.SetAttrTimeout(time.Duration(f.opt.AttrTimeout))
 }
 
+// setEntryOutContext fills a lookup response with cancellable file metadata.
+func (f *FS) setEntryOutContext(ctx context.Context, node vfs.Node, out *fuse.EntryOut) error {
+	file, ok := node.(*vfs.File)
+	if !ok {
+		f.setEntryOut(node, out)
+		return ctx.Err()
+	}
+	size := node.Size()
+	modTime, err := file.ModTimeContext(ctx)
+	if err != nil {
+		return err
+	}
+	setAttrWithModTime(node, &out.Attr, size, modTime)
+	out.SetEntryTimeout(time.Duration(f.opt.AttrTimeout))
+	out.SetAttrTimeout(time.Duration(f.opt.AttrTimeout))
+	return nil
+}
+
 // Translate errors from mountlib into Syscall error numbers
 func translateError(err error) syscall.Errno {
 	if err == nil {
@@ -112,6 +135,8 @@ func translateError(err error) syscall.Errno {
 	}
 	_, uErr := fserrors.Cause(err)
 	switch uErr {
+	case context.Canceled, context.DeadlineExceeded:
+		return syscall.EINTR
 	case vfs.OK:
 		return 0
 	case vfs.ENOENT, fs.ErrorDirNotFound, fs.ErrorObjectNotFound:

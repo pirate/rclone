@@ -1,6 +1,7 @@
 package vfs
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -31,8 +32,8 @@ type Dir struct {
 	f            fs.Fs       // read only
 	cleanupTimer *time.Timer // read only: timer to call cacheCleanup
 
-	mu      sync.RWMutex // protects the following
-	parent  *Dir         // parent, nil for root
+	mu      dirMutex // protects the following
+	parent  *Dir     // parent, nil for root
 	path    string
 	entry   fs.Directory
 	read    time.Time         // time directory entry last read
@@ -57,14 +58,14 @@ const (
 	vDel                   // removed file or directory
 )
 
-func newDir(vfs *VFS, f fs.Fs, parent *Dir, fsDir fs.Directory) *Dir {
+func newDir(ctx context.Context, vfs *VFS, f fs.Fs, parent *Dir, fsDir fs.Directory) *Dir {
 	d := &Dir{
 		vfs:     vfs,
 		f:       f,
 		parent:  parent,
 		entry:   fsDir,
 		path:    fsDir.Remote(),
-		modTime: fsDir.ModTime(vfs.ctx),
+		modTime: fsDir.ModTime(ctx),
 		inode:   newInode(),
 		items:   make(map[string]Node),
 	}
@@ -435,7 +436,13 @@ func name(p string) string {
 //
 // note that we add new objects rather than updating old ones
 func (d *Dir) addObject(node Node) {
-	d.mu.Lock()
+	_ = d.addObjectContext(context.Background(), node)
+}
+
+func (d *Dir) addObjectContext(ctx context.Context, node Node) error {
+	if err := d.mu.LockContext(ctx); err != nil {
+		return err
+	}
 	leaf := node.Name()
 	d.items[leaf] = node
 	if d.virtual == nil {
@@ -451,6 +458,7 @@ func (d *Dir) addObject(node Node) {
 	d.virtual[leaf] = vAdd
 	fs.Debugf(d.path, "Added virtual directory entry %v: %q", vAdd, leaf)
 	d.mu.Unlock()
+	return nil
 }
 
 // AddVirtual adds a virtual object of name and size to the directory
@@ -473,7 +481,7 @@ func (d *Dir) AddVirtual(leaf string, size int64, isDir bool) {
 	if isDir {
 		remote := path.Join(dPath, leaf)
 		entry := fs.NewDir(remote, time.Now())
-		node = newDir(d.vfs, d.f, d, entry)
+		node = newDir(d.vfs.ctx, d.vfs, d.f, d, entry)
 	} else {
 		isLink := false
 		if d.vfs.Opt.Links {
@@ -525,6 +533,11 @@ func (d *Dir) DelVirtual(leaf string) {
 
 // read the directory and sets d.items - must be called with the lock held
 func (d *Dir) _readDir() error {
+	return d._readDirContext(d.vfs.ctx)
+}
+
+// read the directory with cancellation; d.mu must be held
+func (d *Dir) _readDirContext(ctx context.Context) error {
 	when := time.Now()
 	if age, stale := d._age(when); stale {
 		if age != 0 {
@@ -533,7 +546,11 @@ func (d *Dir) _readDir() error {
 	} else {
 		return nil
 	}
-	entries, err := list.DirSorted(d.vfs.ctx, d.f, false, d.path)
+	entries, err := list.DirSorted(ctx, d.f, false, d.path)
+	// Backend metadata and filter APIs can swallow cancellation errors.
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if err == fs.ErrorDirNotFound {
 		// We treat directory not found as empty because we
 		// create directories on the fly
@@ -570,9 +587,12 @@ func (d *Dir) _readDir() error {
 		entries = filteredEntries
 	}
 
-	err = d._readDirFromEntries(entries, nil, time.Time{})
+	err = d._readDirFromEntries(ctx, entries, nil, time.Time{})
 	if err != nil {
 		return err
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 
 	d.read = time.Now()
@@ -584,7 +604,7 @@ func (d *Dir) _readDir() error {
 // update d.items for each dir in the DirTree below this one and
 // set the last read time - must be called with the lock held
 func (d *Dir) _readDirFromDirTree(dirTree dirtree.DirTree, when time.Time) error {
-	return d._readDirFromEntries(dirTree[d.path], dirTree, when)
+	return d._readDirFromEntries(d.vfs.ctx, dirTree[d.path], dirTree, when)
 }
 
 // Remove the virtual directory entry leaf
@@ -724,7 +744,7 @@ func (mv manageVirtuals) end(d *Dir) {
 
 // update d.items and if dirTree is not nil update each dir in the DirTree below this one and
 // set the last read time - must be called with the lock held
-func (d *Dir) _readDirFromEntries(entries fs.DirEntries, dirTree dirtree.DirTree, when time.Time) error {
+func (d *Dir) _readDirFromEntries(ctx context.Context, entries fs.DirEntries, dirTree dirtree.DirTree, when time.Time) error {
 	var err error
 	mv := d._newManageVirtuals()
 	for _, entry := range entries {
@@ -753,11 +773,18 @@ func (d *Dir) _readDirFromEntries(entries fs.DirEntries, dirTree dirtree.DirTree
 		case fs.Directory:
 			// Reuse old dir value if it exists
 			if node == nil || !node.IsDir() {
-				node = newDir(d.vfs, d.f, d, item)
+				node = newDir(ctx, d.vfs, d.f, d, item)
 			}
 			dir := node.(*Dir)
-			dir.mu.Lock()
-			dir.modTime = item.ModTime(d.vfs.ctx)
+			if err := dir.mu.LockContext(ctx); err != nil {
+				return err
+			}
+			modTime := item.ModTime(ctx)
+			if ctx.Err() != nil {
+				dir.mu.Unlock()
+				return ctx.Err()
+			}
+			dir.modTime = modTime
 			dir.entry = item
 			if dirTree != nil {
 				err = dir._readDirFromDirTree(dirTree, when)
@@ -826,9 +853,9 @@ func jsonErrorf(format string, a ...any) []byte {
 // stat a single metadata item in the directory
 //
 // Returns true if it is a metadata name
-func (d *Dir) statMetadata(leaf, baseLeaf string) (metaNode Node, err error) {
+func (d *Dir) statMetadata(ctx context.Context, leaf, baseLeaf string) (metaNode Node, err error) {
 	// Find original file - note that this is recursing into stat()
-	node, err := d.stat(baseLeaf)
+	node, err := d.stat(ctx, baseLeaf)
 	if err != nil {
 		return node, err
 	}
@@ -836,7 +863,10 @@ func (d *Dir) statMetadata(leaf, baseLeaf string) (metaNode Node, err error) {
 	entry := node.DirEntry()
 	var metadataDump []byte
 	if entry != nil {
-		metadata, err := fs.GetMetadata(d.vfs.ctx, entry)
+		metadata, err := fs.GetMetadata(ctx, entry)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		if err != nil {
 			metadataDump = jsonErrorf("failed to read metadata: %v", err)
 		} else if metadata == nil {
@@ -865,9 +895,11 @@ func (d *Dir) statMetadata(leaf, baseLeaf string) (metaNode Node, err error) {
 // returns ENOENT if not found.
 // returns a custom error if directory on a case-insensitive file system
 // contains files with names that differ only by case.
-func (d *Dir) stat(leaf string) (Node, error) {
-	d.mu.Lock()
-	err := d._readDir()
+func (d *Dir) stat(ctx context.Context, leaf string) (Node, error) {
+	if err := d.mu.LockContext(ctx); err != nil {
+		return nil, err
+	}
+	err := d._readDirContext(ctx)
 	if err != nil {
 		d.mu.Unlock()
 		return nil, err
@@ -878,12 +910,14 @@ func (d *Dir) stat(leaf string) (Node, error) {
 	// Look for a metadata file
 	if !ok {
 		if baseLeaf, found := d.vfs.isMetadataFile(leaf); found {
-			node, err := d.statMetadata(leaf, baseLeaf)
+			node, err := d.statMetadata(ctx, leaf, baseLeaf)
 			if err != nil {
 				return nil, err
 			}
 			// Add metadata file to directory as virtual object
-			d.addObject(node)
+			if err := d.addObjectContext(ctx, node); err != nil {
+				return nil, err
+			}
 			return node, nil
 		}
 	}
@@ -893,7 +927,9 @@ func (d *Dir) stat(leaf string) (Node, error) {
 	normCase := ci.IgnoreCaseSync || d.vfs.Opt.CaseInsensitive
 	if !ok && (normUnicode || normCase) {
 		leafNormalized := operations.ToNormal(leaf, normUnicode, normCase) // this handles both case and unicode normalization
-		d.mu.Lock()
+		if err := d.mu.LockContext(ctx); err != nil {
+			return nil, err
+		}
 		for name, node := range d.items {
 			if operations.ToNormal(name, normUnicode, normCase) == leafNormalized {
 				if ok {
@@ -985,7 +1021,7 @@ func (d *Dir) cachedNode(relativePath string) Node {
 // Stat need not to handle the names "." and "..".
 func (d *Dir) Stat(name string) (node Node, err error) {
 	// fs.Debugf(path, "Dir.Stat")
-	node, err = d.stat(name)
+	node, err = d.stat(d.vfs.ctx, name)
 	if err != nil {
 		if err != ENOENT {
 			fs.Errorf(d, "Dir.Stat error: %v", err)
@@ -994,6 +1030,19 @@ func (d *Dir) Stat(name string) (node Node, err error) {
 	}
 	// fs.Debugf(path, "Dir.Stat OK")
 	return node, nil
+}
+
+// StatContext looks up an entry using request cancellation and the VFS config.
+// Canceling the request does not cancel the mount or mark a failed listing fresh.
+func (d *Dir) StatContext(request context.Context, name string) (Node, error) {
+	if err := request.Err(); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithCancel(d.vfs.ctx)
+	stop := context.AfterFunc(request, cancel)
+	defer stop()
+	defer cancel()
+	return d.stat(ctx, name)
 }
 
 // ReadDirAll reads the contents of the directory sorted
@@ -1051,7 +1100,7 @@ func (d *Dir) Create(name string, flags int) (*File, error) {
 		return nil, err
 	}
 	// Return existing node if one exists
-	node, err := d.stat(name)
+	node, err := d.stat(d.vfs.ctx, name)
 	switch err {
 	case ENOENT:
 		// not found, carry on
@@ -1089,7 +1138,7 @@ func (d *Dir) Mkdir(name string) (*Dir, error) {
 		return nil, err
 	}
 	path := path.Join(d.path, name)
-	node, err := d.stat(name)
+	node, err := d.stat(d.vfs.ctx, name)
 	switch err {
 	case ENOENT:
 		// not found, carry on
@@ -1111,7 +1160,7 @@ func (d *Dir) Mkdir(name string) (*Dir, error) {
 		return nil, err
 	}
 	fsDir := fs.NewDir(path, time.Now())
-	dir := newDir(d.vfs, d.f, d, fsDir)
+	dir := newDir(d.vfs.ctx, d.vfs, d.f, d, fsDir)
 	d.addObject(dir)
 	if err = d.SetModTime(time.Now()); err != nil {
 		fs.Errorf(d, "Dir.Mkdir failed to set modtime on parent dir: %v", err)
@@ -1192,7 +1241,7 @@ func (d *Dir) RemoveName(name string) error {
 		return EROFS
 	}
 	// fs.Debugf(path, "Dir.Remove")
-	node, err := d.stat(name)
+	node, err := d.stat(d.vfs.ctx, name)
 	if err != nil {
 		fs.Errorf(d, "Dir.Remove error: %v", err)
 		return err
@@ -1218,7 +1267,7 @@ func (d *Dir) Rename(oldName, newName string, destDir *Dir) error {
 	oldPath := path.Join(d.path, oldName)
 	newPath := path.Join(destDir.path, newName)
 	// fs.Debugf(oldPath, "Dir.Rename to %q", newPath)
-	oldNode, err := d.stat(oldName)
+	oldNode, err := d.stat(d.vfs.ctx, oldName)
 	if err != nil {
 		fs.Errorf(oldPath, "Dir.Rename error: %v", err)
 		return err
