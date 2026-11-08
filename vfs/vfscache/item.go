@@ -57,7 +57,7 @@ import (
 type Item struct {
 	// read only
 	c               *Cache                   // cache this is part of
-	mu              sync.Mutex               // protect the variables
+	mu              vfscommon.RWMutex        // protect the variables
 	cond            sync.Cond                // synchronize with cache cleaner
 	name            string                   // name in the VFS
 	opens           int                      // number of times file is open
@@ -406,7 +406,15 @@ func (item *Item) GetName() (name string) {
 
 // GetSize gets the current size of the item
 func (item *Item) GetSize() (size int64, err error) {
-	item.mu.Lock()
+	return item.GetSizeContext(context.Background())
+}
+
+// GetSizeContext gets the current size, allowing cancellation while waiting for
+// the item lock. The local filesystem stat is not cancellable.
+func (item *Item) GetSizeContext(ctx context.Context) (size int64, err error) {
+	if err := item.mu.LockContext(ctx); err != nil {
+		return 0, err
+	}
 	defer item.mu.Unlock()
 	return item._getSize()
 }
@@ -629,7 +637,7 @@ func (item *Item) open(o fs.Object) (err error) {
 // Calls f with mu unlocked, re-locking mu if a panic is raised
 //
 // mu must be locked when calling this function
-func unlockMutexForCall(mu *sync.Mutex, f func()) {
+func unlockMutexForCall(mu sync.Locker, f func()) {
 	mu.Unlock()
 	defer mu.Lock()
 	f()
@@ -1356,8 +1364,15 @@ func (item *Item) setModTime(modTime time.Time) {
 
 // GetModTime of the cache file
 func (item *Item) GetModTime() (modTime time.Time, err error) {
-	// defer log.Trace(item.name, "modTime=%v", modTime)("")
-	item.mu.Lock()
+	return item.GetModTimeContext(context.Background())
+}
+
+// GetModTimeContext gets the cache modification time, allowing cancellation
+// while waiting for the item lock. The local filesystem stat is not cancellable.
+func (item *Item) GetModTimeContext(ctx context.Context) (modTime time.Time, err error) {
+	if err := item.mu.LockContext(ctx); err != nil {
+		return time.Time{}, err
+	}
 	defer item.mu.Unlock()
 	fi, err := item._stat()
 	if err == nil {

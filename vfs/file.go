@@ -47,7 +47,7 @@ type File struct {
 
 	muRW sync.Mutex // synchronize RWFileHandle.openPending(), RWFileHandle.close() and File.Remove
 
-	mu               sync.RWMutex                    // protects the following
+	mu               vfscommon.RWMutex               // protects the following
 	d                *Dir                            // parent directory
 	dPath            string                          // path of parent directory. NB dir rename means all Files are flushed
 	o                fs.Object                       // NB o may be nil if file is being written
@@ -121,9 +121,14 @@ func (f *File) setSymlink() {
 }
 
 // Mode bits of the file or directory - satisfies Node interface
-func (f *File) Mode() (mode os.FileMode) {
+func (f *File) Mode() os.FileMode {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
+	return f._mode()
+}
+
+// _mode returns the mode with the file lock held.
+func (f *File) _mode() (mode os.FileMode) {
 	if f.isLink {
 		mode = os.FileMode(f.d.vfs.Opt.LinkPerms)
 	} else {
@@ -368,46 +373,162 @@ func (f *File) _roundModTime(modTime time.Time) time.Time {
 //
 // if NoModTime is set then it returns the mod time of the directory
 func (f *File) ModTime() (modTime time.Time) {
-	f.mu.RLock()
-	d, o, pendingModTime, virtualModTime := f.d, f.o, f.pendingModTime, f.virtualModTime
-	f.mu.RUnlock()
+	return f.modTime(f.ctx)
+}
 
-	// Set the virtual modtime up for backends which don't support setting modtime
-	//
-	// Note that we only cache modtime values that we have returned to the OS
-	// if we haven't returned a value to the OS then we can change it
-	defer func() {
-		if f.d.f.Precision() == fs.ModTimeNotSupported && (virtualModTime == nil || !virtualModTime.Equal(modTime)) {
-			f.virtualModTime = &modTime
-			fs.Debugf(f._path(), "Set virtual modtime to %v", f.virtualModTime)
+// FileAttributes holds the size, mode and modification time of a file.
+type FileAttributes struct {
+	Size    int64       // Size is the length in bytes.
+	Mode    os.FileMode // Mode contains the file type and permissions.
+	ModTime time.Time   // ModTime is the modification time.
+}
+
+// AttrContext returns file attributes using request cancellation and the VFS
+// config. File lock acquisition and backend metadata requests are cancellable.
+func (f *File) AttrContext(request context.Context) (FileAttributes, error) {
+	return f.attrContext(request, true)
+}
+
+// ModTimeContext returns the modification time using request cancellation and
+// the VFS config. It returns the context error if the request is canceled.
+func (f *File) ModTimeContext(request context.Context) (time.Time, error) {
+	attr, err := f.attrContext(request, false)
+	return attr.ModTime, err
+}
+
+func (f *File) attrContext(request context.Context, withSizeMode bool) (attr FileAttributes, err error) {
+	if err := request.Err(); err != nil {
+		return attr, err
+	}
+	ctx, cancel := context.WithCancel(f.ctx)
+	stop := context.AfterFunc(request, cancel)
+	defer stop()
+	defer cancel()
+	if err := f.mu.RLockContext(ctx); err != nil {
+		return attr, err
+	}
+	state := f._modTimeState()
+	f.mu.RUnlock()
+	if err := ctx.Err(); err != nil {
+		return FileAttributes{}, err
+	}
+	attr.ModTime = f.modTimeFromState(ctx, state, ctx)
+	if err := ctx.Err(); err != nil {
+		return FileAttributes{}, err
+	}
+	if withSizeMode {
+		// Lazy metadata can refresh the backend object's size. Reacquisition
+		// remains cancellable if an unrelated writer now owns the file.
+		if err := f.mu.RLockContext(ctx); err != nil {
+			return FileAttributes{}, err
 		}
+		attr.Size, err = f._sizeContext(ctx)
+		attr.Mode = f._mode()
+		f.mu.RUnlock()
+		if err != nil {
+			return FileAttributes{}, err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return FileAttributes{}, err
+	}
+	return attr, nil
+}
+
+type fileModTimeState struct {
+	d              *Dir
+	o              fs.Object
+	pendingModTime time.Time
+	virtualModTime *time.Time
+	dPath          string
+	leaf           string
+	isLink         bool
+}
+
+// _modTimeState snapshots the modification time inputs with the file lock held.
+func (f *File) _modTimeState() fileModTimeState {
+	return fileModTimeState{
+		d: f.d, o: f.o, pendingModTime: f.pendingModTime, virtualModTime: f.virtualModTime,
+		dPath: f.dPath, leaf: f.leaf, isLink: f.isLink,
+	}
+}
+
+func (state fileModTimeState) path() string {
+	return path.Join(state.dPath, state.leaf)
+}
+
+func (state fileModTimeState) cachePath() string {
+	leaf := state.leaf
+	if state.isLink {
+		leaf += fs.LinkSuffix
+	}
+	return path.Join(state.dPath, leaf)
+}
+
+func (f *File) modTime(ctx context.Context) time.Time {
+	f.mu.RLock()
+	state := f._modTimeState()
+	f.mu.RUnlock()
+	return f.modTimeFromState(ctx, state, context.Background())
+}
+
+func (f *File) modTimeFromState(ctx context.Context, state fileModTimeState, cacheContext context.Context) (modTime time.Time) {
+	d, o, pendingModTime, virtualModTime := state.d, state.o, state.pendingModTime, state.virtualModTime
+	precision := d.f.Precision()
+	round := func(t time.Time) time.Time {
+		if precision == fs.ModTimeNotSupported {
+			return t
+		}
+		return t.Truncate(precision)
+	}
+
+	// Cache only values returned to the caller, not a backend's canceled fallback.
+	defer func() {
+		if ctx.Err() != nil || precision != fs.ModTimeNotSupported || (virtualModTime != nil && virtualModTime.Equal(modTime)) {
+			return
+		}
+		if err := f.mu.LockContext(ctx); err != nil {
+			return
+		}
+		if f.virtualModTime == virtualModTime {
+			f.virtualModTime = &modTime
+			fs.Debugf(state.path(), "Set virtual modtime to %v", modTime)
+		}
+		f.mu.Unlock()
 	}()
 
 	if d.vfs.Opt.NoModTime {
 		return d.ModTime()
 	}
 	// Read the modtime from a dirty item if it exists
-	if f.d.vfs.Opt.CacheMode >= vfscommon.CacheModeMinimal {
-		if item := f.d.vfs.cache.DirtyItem(f._cachePath()); item != nil {
-			modTime, err := item.GetModTime()
+	if d.vfs.Opt.CacheMode >= vfscommon.CacheModeMinimal {
+		item, err := d.vfs.cache.DirtyItemContext(cacheContext, state.cachePath())
+		if err != nil {
+			return time.Time{}
+		}
+		if item != nil {
+			modTime, err := item.GetModTimeContext(cacheContext)
+			if cacheContext.Err() != nil {
+				return time.Time{}
+			}
 			if err != nil {
-				fs.Errorf(f._path(), "ModTime: Item GetModTime failed: %v", err)
+				fs.Errorf(state.path(), "ModTime: Item GetModTime failed: %v", err)
 			} else {
-				return f._roundModTime(modTime)
+				return round(modTime)
 			}
 		}
 	}
 	if !pendingModTime.IsZero() {
-		return f._roundModTime(pendingModTime)
+		return round(pendingModTime)
 	}
 	if virtualModTime != nil && !virtualModTime.IsZero() {
-		fs.Debugf(f._path(), "Returning virtual modtime %v", f.virtualModTime)
-		return f._roundModTime(*virtualModTime)
+		fs.Debugf(state.path(), "Returning virtual modtime %v", virtualModTime)
+		return round(*virtualModTime)
 	}
 	if o == nil {
 		return time.Now()
 	}
-	return o.ModTime(f.ctx)
+	return o.ModTime(ctx)
 }
 
 // nonNegative returns 0 if i is -ve, i otherwise
@@ -422,24 +543,37 @@ func nonNegative(i int64) int64 {
 func (f *File) Size() int64 {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
+	size, _ := f._sizeContext(context.Background())
+	return size
+}
+
+// _sizeContext returns the size with the file lock held.
+func (f *File) _sizeContext(ctx context.Context) (int64, error) {
 
 	// Read the size from a dirty item if it exists
 	if f.d.vfs.Opt.CacheMode >= vfscommon.CacheModeMinimal {
-		if item := f.d.vfs.cache.DirtyItem(f._cachePath()); item != nil {
-			size, err := item.GetSize()
+		item, err := f.d.vfs.cache.DirtyItemContext(ctx, f._cachePath())
+		if err != nil {
+			return 0, err
+		}
+		if item != nil {
+			size, err := item.GetSizeContext(ctx)
+			if ctx.Err() != nil {
+				return 0, ctx.Err()
+			}
 			if err != nil {
 				fs.Errorf(f._path(), "Size: Item GetSize failed: %v", err)
 			} else {
-				return size
+				return size, nil
 			}
 		}
 	}
 
 	// if o is nil it isn't valid yet or there are writers, so return the size so far
 	if f._writingInProgress() {
-		return f.size.Load()
+		return f.size.Load(), nil
 	}
-	return nonNegative(f.o.Size())
+	return nonNegative(f.o.Size()), nil
 }
 
 // SetModTime sets the modtime for the file
@@ -530,6 +664,15 @@ func (f *File) writingInProgress() bool {
 	return f.o == nil || len(f.writers) != 0
 }
 
+// writingStateContext snapshots the virtual-file state with cancellable locking.
+func (f *File) writingStateContext(ctx context.Context) (writing bool, cachePath string, err error) {
+	if err := f.mu.RLockContext(ctx); err != nil {
+		return false, "", err
+	}
+	defer f.mu.RUnlock()
+	return f._writingInProgress(), f._cachePath(), nil
+}
+
 // Update the size while writing
 func (f *File) setSize(n int64) {
 	f.size.Store(n)
@@ -551,19 +694,33 @@ func (f *File) setObject(o fs.Object) {
 // Update the object but don't update the directory cache - for use by
 // the directory cache
 func (f *File) setObjectNoUpdate(o fs.Object) {
-	f.mu.Lock()
+	_ = f.setObjectNoUpdateContext(context.Background(), o)
+}
+
+func (f *File) setObjectNoUpdateContext(ctx context.Context, o fs.Object) error {
+	if err := f.mu.LockContext(ctx); err != nil {
+		return err
+	}
 	f.o = o
 	f._setIsLink()
 	f.virtualModTime = nil
 	fs.Debugf(f._path(), "Reset virtual modtime")
 	f.mu.Unlock()
+	return nil
 }
 
 // Get the current fs.Object - may be nil
 func (f *File) getObject() fs.Object {
-	f.mu.RLock()
+	o, _ := f.getObjectContext(context.Background())
+	return o
+}
+
+func (f *File) getObjectContext(ctx context.Context) (fs.Object, error) {
+	if err := f.mu.RLockContext(ctx); err != nil {
+		return nil, err
+	}
 	defer f.mu.RUnlock()
-	return f.o
+	return f.o, nil
 }
 
 // exists returns whether the file exists already
