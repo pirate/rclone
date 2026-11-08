@@ -53,15 +53,15 @@ type Cache struct {
 	writeback  *writeback.WriteBack // holds Items for writeback
 	avFn       AddVirtualFn         // if set, can be called to add dir entries
 
-	mu            sync.Mutex       // protects the following variables
-	cond          sync.Cond        // cond lock for synchronous cache cleaning
-	item          map[string]*Item // files/directories in the cache
-	errItems      map[string]error // items in error state
-	used          int64            // total size of files in the cache
-	outOfSpace    bool             // out of space
-	cleanerKicked bool             // some thread kicked the cleaner upon out of space
-	kickerMu      sync.Mutex       // mutex for cleanerKicked
-	kick          chan struct{}    // channel for kicking clear to start
+	mu            vfscommon.RWMutex // protects the following variables
+	cond          sync.Cond         // cond lock for synchronous cache cleaning
+	item          map[string]*Item  // files/directories in the cache
+	errItems      map[string]error  // items in error state
+	used          int64             // total size of files in the cache
+	outOfSpace    bool              // out of space
+	cleanerKicked bool              // some thread kicked the cleaner upon out of space
+	kickerMu      sync.Mutex        // mutex for cleanerKicked
+	kick          chan struct{}     // channel for kicking clear to start
 
 }
 
@@ -320,14 +320,27 @@ func (c *Cache) put(name string, item *Item) (oldItem *Item) {
 //
 // name should be a remote path not an osPath
 func (c *Cache) InUse(name string) bool {
+	inUse, _ := c.InUseContext(context.Background(), name)
+	return inUse
+}
+
+// InUseContext reports whether a cached item is open or dirty, allowing
+// cancellation while waiting for the cache or item lock.
+func (c *Cache) InUseContext(ctx context.Context, name string) (bool, error) {
 	name = clean(name)
-	c.mu.Lock()
+	if err := c.mu.LockContext(ctx); err != nil {
+		return false, err
+	}
 	item := c.item[name]
 	c.mu.Unlock()
 	if item == nil {
-		return false
+		return false, nil
 	}
-	return item.inUse()
+	if err := item.mu.LockContext(ctx); err != nil {
+		return false, err
+	}
+	defer item.mu.Unlock()
+	return item.opens != 0 || item.info.Dirty, nil
 }
 
 // DirtyItem returns the Item if it exists in the cache **and** is
@@ -335,14 +348,30 @@ func (c *Cache) InUse(name string) bool {
 //
 // name should be a remote path not an osPath
 func (c *Cache) DirtyItem(name string) (item *Item) {
+	item, _ = c.DirtyItemContext(context.Background(), name)
+	return item
+}
+
+// DirtyItemContext returns a dirty cached item, allowing cancellation while
+// waiting for the cache or item lock. It returns nil for a missing or clean item.
+func (c *Cache) DirtyItemContext(ctx context.Context, name string) (item *Item, err error) {
 	name = clean(name)
-	c.mu.Lock()
+	if err := c.mu.LockContext(ctx); err != nil {
+		return nil, err
+	}
 	defer c.mu.Unlock()
 	item = c.item[name]
-	if item != nil && !item.IsDirty() {
-		item = nil
+	if item != nil {
+		if err := item.mu.LockContext(ctx); err != nil {
+			return nil, err
+		}
+		dirty := item.info.Dirty
+		item.mu.Unlock()
+		if !dirty {
+			item = nil
+		}
 	}
-	return item
+	return item, nil
 }
 
 // get gets a file name from the cache or creates a new one

@@ -633,6 +633,10 @@ func (d *Dir) _deleteVirtual(name string) {
 //
 // 2) vFileAdd that are being written or uploaded
 func (d *Dir) _purgeVirtual() {
+	_ = d._purgeVirtualContext(context.Background())
+}
+
+func (d *Dir) _purgeVirtualContext(ctx context.Context) error {
 	canHaveEmptyDirectories := d.f.Features().CanHaveEmptyDirectories
 	for name, virtualState := range d.virtual {
 		switch virtualState {
@@ -658,19 +662,30 @@ func (d *Dir) _purgeVirtual() {
 				d._deleteVirtual(name)
 				continue
 			}
-			if f.writingInProgress() {
+			writing, cachePath, err := f.writingStateContext(ctx)
+			if err != nil {
+				return err
+			}
+			if writing {
 				// if writing in progress then leave virtual
 				continue
 			}
-			if d.vfs.Opt.CacheMode >= vfscommon.CacheModeMinimal && d.vfs.cache.InUse(f.CachePath()) {
-				// if object in use or dirty then leave virtual
-				continue
+			if d.vfs.Opt.CacheMode >= vfscommon.CacheModeMinimal {
+				inUse, err := d.vfs.cache.InUseContext(ctx, cachePath)
+				if err != nil {
+					return err
+				}
+				if inUse {
+					// if object in use or dirty then leave virtual
+					continue
+				}
 			}
 			d._deleteVirtual(name)
 		default:
 			d._deleteVirtual(name)
 		}
 	}
+	return nil
 }
 
 // Manage the virtuals in a listing
@@ -682,10 +697,11 @@ type manageVirtuals map[string]struct{}
 // be removed.
 //
 // must be called with the Dir lock held
-func (d *Dir) _newManageVirtuals() manageVirtuals {
-	tv := make(manageVirtuals)
-	d._purgeVirtual()
-	return tv
+func (d *Dir) _newManageVirtuals(ctx context.Context) (manageVirtuals, error) {
+	if err := d._purgeVirtualContext(ctx); err != nil {
+		return nil, err
+	}
+	return make(manageVirtuals), nil
 }
 
 // This should be called for every entry added to the directory
@@ -745,8 +761,10 @@ func (mv manageVirtuals) end(d *Dir) {
 // update d.items and if dirTree is not nil update each dir in the DirTree below this one and
 // set the last read time - must be called with the lock held
 func (d *Dir) _readDirFromEntries(ctx context.Context, entries fs.DirEntries, dirTree dirtree.DirTree, when time.Time) error {
-	var err error
-	mv := d._newManageVirtuals()
+	mv, err := d._newManageVirtuals(ctx)
+	if err != nil {
+		return err
+	}
 	for _, entry := range entries {
 		name := path.Base(entry.Remote())
 		if d.vfs.Opt.Links {
@@ -766,7 +784,9 @@ func (d *Dir) _readDirFromEntries(ctx context.Context, entries fs.DirEntries, di
 			obj := item
 			// Reuse old file value if it exists
 			if file, ok := node.(*File); node != nil && ok {
-				file.setObjectNoUpdate(obj)
+				if err := file.setObjectNoUpdateContext(ctx, obj); err != nil {
+					return err
+				}
 			} else {
 				node = newFile(d, d.path, obj, name)
 			}
@@ -860,7 +880,15 @@ func (d *Dir) statMetadata(ctx context.Context, leaf, baseLeaf string) (metaNode
 		return node, err
 	}
 	// Read the metadata from the original entry into a JSON dump
-	entry := node.DirEntry()
+	var entry fs.DirEntry
+	if file, ok := node.(*File); ok {
+		entry, err = file.getObjectContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		entry = node.DirEntry()
+	}
 	var metadataDump []byte
 	if entry != nil {
 		metadata, err := fs.GetMetadata(ctx, entry)
@@ -882,7 +910,16 @@ func (d *Dir) statMetadata(ctx context.Context, leaf, baseLeaf string) (metaNode
 	}
 	// Make a memory based file with metadataDump in
 	remote := path.Join(d.path, leaf)
-	o := object.NewMemoryObject(remote, node.ModTime(), metadataDump)
+	var modTime time.Time
+	if file, ok := node.(*File); ok {
+		modTime, err = file.ModTimeContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		modTime = node.ModTime()
+	}
+	o := object.NewMemoryObject(remote, modTime, metadataDump)
 	f := newFile(d, d.path, o, leaf)
 	// Base the metadata inode number off the real file inode number
 	// to keep it constant

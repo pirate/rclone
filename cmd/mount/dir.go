@@ -30,7 +30,7 @@ var _ fusefs.Node = (*Dir)(nil)
 
 // Attr updates the attributes of a directory
 func (d *Dir) Attr(ctx context.Context, a *fuse.Attr) (err error) {
-	defer log.Trace(d, "")("attr=%+v, err=%v", a, &err)
+	defer log.Trace(nil, "inode=%d", d.Inode())("attr=%+v, err=%v", a, &err)
 	a.Valid = time.Duration(d.fsys.opt.AttrTimeout)
 	a.Gid = d.VFS().Opt.GID
 	a.Uid = d.VFS().Opt.UID

@@ -52,7 +52,10 @@ func (f *FS) SetDebug(debug bool) {
 
 // get the Mode from a vfs Node
 func getMode(node os.FileInfo) uint32 {
-	vfsMode := node.Mode()
+	return modeBits(node.Mode())
+}
+
+func modeBits(vfsMode os.FileMode) uint32 {
 	Mode := vfsMode.Perm()
 	if vfsMode&os.ModeDir != 0 {
 		Mode |= fuse.S_IFDIR
@@ -73,15 +76,18 @@ func setAttr(node vfs.Node, attr *fuse.Attr) {
 }
 
 func setAttrWithModTime(node vfs.Node, attr *fuse.Attr, size int64, modTime time.Time) {
+	setAttrValues(node.VFS(), node.Inode(), node.Mode(), attr, size, modTime)
+}
+
+func setAttrValues(vfs *vfs.VFS, inode uint64, mode os.FileMode, attr *fuse.Attr, size int64, modTime time.Time) {
 	Size := uint64(size)
 	const BlockSize = 512
 	Blocks := (Size + BlockSize - 1) / BlockSize
 	// set attributes
-	vfs := node.VFS()
 	attr.Owner.Gid = vfs.Opt.GID
 	attr.Owner.Uid = vfs.Opt.UID
-	attr.Ino = node.Inode()
-	attr.Mode = getMode(node)
+	attr.Ino = inode
+	attr.Mode = modeBits(mode)
 	attr.Size = Size
 	attr.Nlink = 1
 	attr.Blocks = Blocks
@@ -117,12 +123,11 @@ func (f *FS) setEntryOutContext(ctx context.Context, node vfs.Node, out *fuse.En
 		f.setEntryOut(node, out)
 		return ctx.Err()
 	}
-	size := node.Size()
-	modTime, err := file.ModTimeContext(ctx)
+	attr, err := file.AttrContext(ctx)
 	if err != nil {
 		return err
 	}
-	setAttrWithModTime(node, &out.Attr, size, modTime)
+	setAttrValues(f.VFS, node.Inode(), attr.Mode, &out.Attr, attr.Size, attr.ModTime)
 	out.SetEntryTimeout(time.Duration(f.opt.AttrTimeout))
 	out.SetAttrTimeout(time.Duration(f.opt.AttrTimeout))
 	return nil
