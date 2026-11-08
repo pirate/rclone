@@ -140,14 +140,16 @@ jobs:
             ${{ runner.os }}-${{ steps.imageos.outputs.result }}-go-${{ env.CACHE_NAME }}-${{ env.PLATFORM }}
           # Cache only the go builds, the module download is cached via the docker layer caching
           path: |
-            go-build-cache
+            ${{ runner.temp }}/rclone-go-build-cache
 
       - name: Inject Go Build Cache into Docker
         uses: reproducible-containers/buildkit-cache-dance@v3
         with:
+          # Keep generated files out of COPY . . so binaries retain a clean VCS stamp.
+          scratch-dir: ${{ runner.temp }}/rclone-cache-dance
           cache-map: |
             {
-              "go-build-cache": "/root/.cache/go-build"
+              "${{ runner.temp }}/rclone-go-build-cache": "/root/.cache/go-build"
             }
           skip-extraction: ${{ steps.go-cache.outputs.cache-hit }}
 
